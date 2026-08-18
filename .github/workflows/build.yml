@@ -1,7 +1,8 @@
 name: Build
 on:
-push:
+  push:
     branches: [master]
+    paths-ignore: [README.md]
   release:
     types: [published]
 defaults:
