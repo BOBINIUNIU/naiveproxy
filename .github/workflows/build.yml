@@ -66,11 +66,13 @@ jobs:
           key: ccache-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
           restore-keys: ccache-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
 
-      # 2. 从系统包管理器安装基础的编译依赖
-      - name: Install APT packages
+      # 2. 从系统包管理器安装依赖，并补全 QEMU 模拟环境
+      - name: Install APT packages & QEMU Emulation
         run: |
           sudo apt update
-          sudo apt install -y ninja-build pkg-config ccache bubblewrap
+          # 关键修复：添加 qemu-user 和 binfmt-support 以便 x86 服务器能够模拟运行 arm64 文件进行测试
+          sudo apt install -y ninja-build pkg-config ccache bubblewrap qemu-user binfmt-support
+          sudo apt remove -y libc6-i386
 
       # 3. 运行项目原生的获取工具与编译脚本
       - run: ./get-clang.sh
