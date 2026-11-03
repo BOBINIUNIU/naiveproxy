@@ -1,6 +1,6 @@
 name: Build
 on:
-  workflow_dispatch: # 关键修改：只有手动点击按钮时才触发
+  workflow_dispatch: # 只有手动点击 Actions 页面上的按钮时才触发
   release:
     types: [published] # 保持对发布新版本时的兼容
 defaults:
@@ -13,72 +13,33 @@ env:
   CCACHE_MAXFILES: 0
   SCCACHE_CACHE_SIZE: 200M
 jobs:
-  cache-toolchains-posix:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache toolchains (Linux, OpenWrt, Android)
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/gn/
-            src/qemu-user*.deb
-          key: toolchains-posix-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache PGO (Linux, OpenWrt)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/build/pgo_profiles/
-          key: pgo-linux-openwrt-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache AFDO (Android)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/android/profiles/
-          key: afdo-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache Android NDK (Android)
-        uses: actions/cache@v4
-        with:
-          path: src/third_party/android_toolchain/ndk/
-          key: android-ndk-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Fetch Clang
-        run: |
-          ./get-clang.sh
-          EXTRA_FLAGS='target_os="android"' ./get-clang.sh
-      - name: Download QEMU
-        run: |
-          if [ ! -f qemu-user*.deb ]; then
-            wget https://debian.org
-          fi
   linux:
-    needs: cache-toolchains-posix
-    if: ${{ !cancelled() }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64]
+        arch: [arm64] # 严格限定：只编译 arm64 架构
     env:
       EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}"'
       BUNDLE: naiveproxy-${{ github.event.release.tag_name || github.ref_name }}-linux-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
-      - name: Cache toolchains (Linux, OpenWrt, Android)
+
+      # 1. 设置和加载编译缓存
+      - name: Cache toolchains & PGO
         uses: actions/cache@v4
         with:
           path: |
             src/third_party/llvm-build/Release+Asserts/
             src/gn/
-            src/qemu-user*.deb
-          key: toolchains-posix-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache PGO (Linux, OpenWrt)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/build/pgo_profiles/
-          key: pgo-linux-openwrt-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
+            src/chrome/build/pgo_profiles/
+          key: toolchains-linux-arm64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
+
       - name: Regenerate Debian keyring
         run: |
           rm -f ./build/linux/sysroot_scripts/keyring.gpg
           GPG_TTY=/dev/null ./build/linux/sysroot_scripts/generate_keyring.sh
+
       - name: Cache sysroot
         uses: actions/cache@v4
         with:
@@ -87,32 +48,38 @@ jobs:
             src/out/sysroot-build/trixie/trixie_*
             src/out/sysroot-build/sid/sid_*
           key: sysroot-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
+
       - id: ccache-timestamp
         run: echo "CCACHE_TIMESTAMP=$(date +%s)" >>$GITHUB_OUTPUT
+
       - name: Host tool ccache
         uses: actions/cache@v4
         with:
           path: src/.host_tool_cache
           key: ccache-posix-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
           restore-keys: ccache-posix-${{ hashFiles('CHROMIUM_VERSION') }}-
+
       - name: Cache ccache files
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
           key: ccache-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
           restore-keys: ccache-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
+
+      # 2. 从系统包管理器安装基础的编译依赖
       - name: Install APT packages
         run: |
           sudo apt update
-          sudo apt install ninja-build pkg-config ccache bubblewrap
-          sudo apt remove -y qemu-user-binfmt
-          sudo dpkg -i qemu-user*.deb
-          sudo apt remove libc6-i386
+          sudo apt install -y ninja-build pkg-config ccache bubblewrap
+
+      # 3. 运行项目原生的获取工具与编译脚本
       - run: ./get-clang.sh
       - run: ccache -z
       - run: ./build.sh
       - run: ccache -s && ccache --evict-older-than 1d
       - run: ../tests/basic.sh out/Release/naive
+
+      # 4. 固化、打包编译出的 arm64 文件
       - name: Pack naiveproxy assets
         run: |
           mkdir ${{ env.BUNDLE }}
@@ -120,12 +87,13 @@ jobs:
           tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
           openssl sha256 out/Release/naive >sha256sum.txt
           echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.BUNDLE }}.tar.xz naive executable sha256 ${{ env.SHA256SUM }}
           path: src/sha256sum.txt
 
-      # 自动发布到 Release 页面
+      # 5. 自动上传并将文件部署到您的 Release 页面
       - name: Automatically Deploy to Release
         uses: softprops/action-gh-release@v2
         with:
