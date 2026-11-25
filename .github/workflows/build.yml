@@ -1,22 +1,8 @@
 name: Build
 on:
-  push:
-    branches: [master, main]
-    paths-ignore: [README.md]
-  workflow_dispatch:
-    inputs:
-      android_only:
-        description: Build only the Android arm64 target
-        type: boolean
-        required: false
-        default: false
-      apk_version_name:
-        description: Version name for the Android APK
-        type: string
-        required: false
-        default: v0.0.0-1
+  workflow_dispatch: # 只有手动点击 Actions 页面上的按钮时才触发
   release:
-    types: [published]
+    types: [published] # 保持对发布新版本时的兼容
 defaults:
   run:
     shell: bash
@@ -27,120 +13,33 @@ env:
   CCACHE_MAXFILES: 0
   SCCACHE_CACHE_SIZE: 200M
 jobs:
-  cache-toolchains-posix:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache toolchains (Linux, OpenWrt, Android)
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/gn/
-            src/qemu-user*.deb
-          key: toolchains-posix-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache PGO (Linux, OpenWrt)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/build/pgo_profiles/
-          key: pgo-linux-openwrt-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache AFDO (Android)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/android/profiles/
-          key: afdo-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache Android NDK (Android)
-        uses: actions/cache@v4
-        with:
-          path: src/third_party/android_toolchain/ndk/
-          key: android-ndk-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - run: ./get-clang.sh
-      - run: EXTRA_FLAGS='target_os="android"' ./get-clang.sh
-      - run: |
-          if [ ! -f qemu-user*.deb ]; then
-            wget https://snapshot.debian.org/archive/debian/20250405T083429Z/pool/main/q/qemu/qemu-user_9.2.2%2Bds-1%2Bb2_amd64.deb
-          fi
-  cache-toolchains-win:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.android_only }}
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache toolchains
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/gn/
-            ~/.cargo/bin/
-            ~/bin/ninja.exe
-          key: toolchains-win-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache PGO (win64)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/build/pgo_profiles/chrome-win64-*
-          key: pgo-win64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - run: EXTRA_FLAGS='target_cpu="x64"' ./get-clang.sh
-      - run: |
-          if [ ! -f ~/bin/ninja.exe ]; then
-            curl -LO https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-win.zip
-            unzip ninja-win.zip -d ~/bin
-          fi
-  cache-toolchains-mac-x64:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.android_only }}
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/chrome/build/pgo_profiles/chrome-mac-*
-            src/gn/
-          key: toolchains-pgo-mac-x64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - run: EXTRA_FLAGS='target_cpu="x64"' ./get-clang.sh
-  cache-toolchains-mac-arm64:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.android_only }}
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/chrome/build/pgo_profiles/chrome-mac-*
-            src/gn/
-          key: toolchains-pgo-mac-arm64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - run: EXTRA_FLAGS='target_cpu="arm64"' ./get-clang.sh
   linux:
-    needs: cache-toolchains-posix
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.android_only) }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64]
+        arch: [arm64] # 严格限定：只编译 arm64 架构
     env:
       EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}"'
       BUNDLE: naiveproxy-${{ github.event.release.tag_name || github.ref_name }}-linux-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
-      - name: Cache toolchains (Linux, OpenWrt, Android)
+
+      # 1. 设置和加载编译缓存
+      - name: Cache toolchains & PGO
         uses: actions/cache@v4
         with:
           path: |
             src/third_party/llvm-build/Release+Asserts/
             src/gn/
-            src/qemu-user*.deb
-          key: toolchains-posix-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache PGO (Linux, OpenWrt)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/build/pgo_profiles/
-          key: pgo-linux-openwrt-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
+            src/chrome/build/pgo_profiles/
+          key: toolchains-linux-arm64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
+
       - name: Regenerate Debian keyring
         run: |
           rm -f ./build/linux/sysroot_scripts/keyring.gpg
           GPG_TTY=/dev/null ./build/linux/sysroot_scripts/generate_keyring.sh
+
       - name: Cache sysroot
         uses: actions/cache@v4
         with:
@@ -149,33 +48,40 @@ jobs:
             src/out/sysroot-build/trixie/trixie_*
             src/out/sysroot-build/sid/sid_*
           key: sysroot-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
+
       - id: ccache-timestamp
         run: echo "CCACHE_TIMESTAMP=$(date +%s)" >>$GITHUB_OUTPUT
+
       - name: Host tool ccache
         uses: actions/cache@v4
         with:
           path: src/.host_tool_cache
           key: ccache-posix-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
           restore-keys: ccache-posix-${{ hashFiles('CHROMIUM_VERSION') }}-
+
       - name: Cache ccache files
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
           key: ccache-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
           restore-keys: ccache-linux-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
-      - name: Install APT packages
+
+      # 2. 从系统包管理器安装依赖，并补全 QEMU 模拟环境
+      - name: Install APT packages & QEMU Emulation
         run: |
           sudo apt update
-          sudo apt install ninja-build pkg-config ccache bubblewrap
-          sudo apt remove -y qemu-user-binfmt
-          sudo dpkg -i qemu-user*.deb
-          # libc6-i386 interferes with x86 build
-          sudo apt remove libc6-i386
+          # 关键修复：添加 qemu-user 和 binfmt-support 以便 x86 服务器能够模拟运行 arm64 文件进行测试
+          sudo apt install -y ninja-build pkg-config ccache bubblewrap qemu-user binfmt-support
+          sudo apt remove -y libc6-i386
+
+      # 3. 运行项目原生的获取工具与编译脚本
       - run: ./get-clang.sh
       - run: ccache -z
       - run: ./build.sh
       - run: ccache -s && ccache --evict-older-than 1d
       - run: ../tests/basic.sh out/Release/naive
+
+      # 4. 固化、打包编译出的 arm64 文件
       - name: Pack naiveproxy assets
         run: |
           mkdir ${{ env.BUNDLE }}
@@ -183,391 +89,22 @@ jobs:
           tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
           openssl sha256 out/Release/naive >sha256sum.txt
           echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.BUNDLE }}.tar.xz naive executable sha256 ${{ env.SHA256SUM }}
           path: src/sha256sum.txt
-      - name: Upload naiveproxy assets
-        if: ${{ github.event_name == 'release' }}
-        run: gh release upload "${GITHUB_REF##*/}" ${{ env.BUNDLE }}.tar.xz --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  android:
-    needs: cache-toolchains-posix
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            abi: arm64-v8a
-    env:
-      EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}" target_os="android"'
-      BUNDLE: naiveproxy-plugin-${{ github.event.release.tag_name || inputs.apk_version_name || github.ref_name }}-${{ matrix.abi }}.apk
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+
+      # 5. 自动上传并将文件部署到您的 Release 页面
+      - name: Automatically Deploy to Release
+        uses: softprops/action-gh-release@v2
         with:
-          distribution: 'temurin'
-          java-version: 21
-      - name: Cache toolchains (Linux, OpenWrt, Android)
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/gn/
-            src/qemu-user*.deb
-          key: toolchains-posix-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache Android NDK (Android)
-        uses: actions/cache@v4
-        with:
-          path: src/third_party/android_toolchain/ndk/
-          key: android-ndk-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache AFDO (Android)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/android/profiles/
-          key: afdo-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache sysroot
-        uses: actions/cache@v4
-        with:
-          path: src/out/sysroot-build/android/
-          key: sysroot-android-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - id: ccache-timestamp
-        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >>$GITHUB_OUTPUT
-      - name: Host tool ccache
-        uses: actions/cache@v4
-        with:
-          path: src/.host_tool_cache
-          key: ccache-posix-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
-          restore-keys: ccache-posix-${{ hashFiles('CHROMIUM_VERSION') }}-
-      - name: Cache ccache files
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-android-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
-          restore-keys: ccache-android-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
-      - name: Install APT packages
-        run: |
-          sudo apt update
-          sudo apt install ninja-build pkg-config ccache bubblewrap
-          sudo apt remove -y qemu-user-binfmt
-          sudo dpkg -i qemu-user*.deb
-          # libc6-i386 interferes with x86 build
-          sudo apt remove libc6-i386
-      - run: ./get-clang.sh
-      - run: ccache -z
-      - run: ./build.sh
-      - run: ccache -s && ccache --evict-older-than 1d
-      - run: ./get-android-sys.sh
-      - run: ../tests/basic.sh out/Release/naive
-      - name: Gradle cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle
-          key: gradle-${{ hashFiles('**/*.gradle.kts') }}
-      - name: Create APK
-        working-directory: apk
-        env:
-          APK_ABI: ${{ matrix.abi }}
-          APK_VERSION_NAME: ${{ github.event.release.tag_name || inputs.apk_version_name || 'v0.0.0-1' }}
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          mkdir -p app/libs/$APK_ABI
-          cp ../src/out/Release/naive app/libs/$APK_ABI/libnaive.so
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || \
-             [ -z "$ANDROID_KEY_ALIAS" ] || \
-             [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || \
-             [ -z "$ANDROID_KEY_PASSWORD" ]; then
-            echo "Android release signing secrets are required; refusing to build an unsigned APK" >&2
-            exit 1
-          fi
-          export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/naiveproxy-release.keystore"
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_FILE"
-          test -s "$ANDROID_KEYSTORE_FILE"
-          keytool -list -keystore "$ANDROID_KEYSTORE_FILE" \
-            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            -alias "$ANDROID_KEY_ALIAS" >/dev/null
-          ./gradlew :app:assembleRelease
-          apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)
-          test -n "$apk"
-          test -n "$(unzip -l "$apk" | awk -v abi="$APK_ABI" '$0 ~ "lib/" abi "/libnaive.so" { found=1 } END { print found }')"
-          android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          test -n "$android_sdk"
-          apksigner=$(find "$android_sdk/build-tools" \
-            -type f -name apksigner -print | sort -V | tail -n 1)
-          test -x "$apksigner"
-          "$apksigner" verify --verbose "$apk" > apk-verify.txt
-          cat apk-verify.txt
-          openssl sha256 "$apk" >sha256sum.txt
-          echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BUNDLE }} sha256 ${{ env.SHA256SUM }}
-          path: |
-            apk/app/build/outputs/apk/release/*.apk
-            apk/apk-verify.txt
-            apk/sha256sum.txt
-      - name: Upload naiveproxy assets
-        if: ${{ github.event_name == 'release' }}
-        working-directory: apk/app/build/outputs/apk/release
-        run: gh release upload "${GITHUB_REF##*/}" *.apk --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  win:
-    needs: cache-toolchains-win
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.android_only) }}
-    runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64]
-    env:
-      EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}"'
-      BUNDLE: naiveproxy-${{ github.event.release.tag_name || github.ref_name }}-win-${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache toolchains
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/gn/
-            ~/.cargo/bin/
-            ~/bin/ninja.exe
-          key: toolchains-win-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache PGO (win64)
-        if: ${{ matrix.arch == 'x64' }}
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/build/pgo_profiles/chrome-win64-*
-          key: pgo-win64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - id: ccache-timestamp
-        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >>$GITHUB_OUTPUT
-      - name: Cache ccache files
-        uses: actions/cache@v4
-        with:
-          path: ~/AppData/Local/Mozilla/sccache
-          key: ccache-win-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
-          restore-keys: ccache-win-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
-      - run: ./get-clang.sh
-      - run: ~/.cargo/bin/sccache -z
-      - run: ./build.sh
-      - run: ~/.cargo/bin/sccache -s
-      - run: ../tests/basic.sh out/Release/naive
-      - name: Pack naiveproxy assets
-        run: |
-          mkdir ${{ env.BUNDLE }}
-          cp out/Release/naive config.json ../LICENSE ../USAGE.txt ${{ env.BUNDLE }}
-          7z a ${{ env.BUNDLE }}.zip ${{ env.BUNDLE }}
-          openssl sha256 out/Release/naive.exe >sha256sum.txt
-          echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BUNDLE }}.zip naive executable sha256 ${{ env.SHA256SUM }}
-          path: src/sha256sum.txt
-      - name: Upload naiveproxy assets
-        if: ${{ github.event_name == 'release' }}
-        run: gh release upload "${GITHUB_REF##*/}"  ${{ env.BUNDLE }}.zip --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  mac-x64:
-    needs: cache-toolchains-mac-x64
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.android_only) }}
-    runs-on: macos-15-intel
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64]
-    env:
-      EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}"'
-      BUNDLE: naiveproxy-${{ github.event.release.tag_name || github.ref_name }}-mac-${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache toolchains and PGO
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/chrome/build/pgo_profiles/chrome-mac-*
-            src/gn/
-          key: toolchains-pgo-mac-x64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - id: ccache-timestamp
-        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >>$GITHUB_OUTPUT
-      - name: Cache ccache files
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/ccache
-          key: ccache-mac-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
-          restore-keys: ccache-mac-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
-      - run: brew install ninja ccache
-      - run: pip install setuptools
-      - run: ./get-clang.sh
-      - run: ccache -z
-      - run: ./build.sh
-      - run: ccache -s && ccache --evict-older-than 1d
-      - run: ../tests/basic.sh out/Release/naive
-      - name: Pack naiveproxy assets
-        run: |
-          mkdir ${{ env.BUNDLE }}
-          cp out/Release/naive config.json ../LICENSE ../USAGE.txt ${{ env.BUNDLE }}
-          tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
-          openssl sha256 out/Release/naive >sha256sum.txt
-          echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BUNDLE }}.tar.xz naive executable sha256 ${{ env.SHA256SUM }}
-          path: src/sha256sum.txt
-      - name: Upload naiveproxy assets
-        if: ${{ github.event_name == 'release' }}
-        run: gh release upload "${GITHUB_REF##*/}" ${{ env.BUNDLE }}.tar.xz --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  mac-arm64:
-    needs: cache-toolchains-mac-arm64
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.android_only) }}
-    runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [arm64]
-    env:
-      EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}"'
-      BUNDLE: naiveproxy-${{ github.event.release.tag_name || github.ref_name }}-mac-${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache toolchains and PGO
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/chrome/build/pgo_profiles/chrome-mac-*
-            src/gn/
-          key: toolchains-pgo-mac-arm64-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - id: ccache-timestamp
-        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >>$GITHUB_OUTPUT
-      - name: Cache ccache files
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/ccache
-          key: ccache-mac-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
-          restore-keys: ccache-mac-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
-      - run: brew install ninja ccache
-      - run: pip install setuptools
-      - run: ./get-clang.sh
-      - run: ccache -z
-      - run: ./build.sh
-      - run: ccache -s && ccache --evict-older-than 1d
-      - run: ../tests/basic.sh out/Release/naive
-      - name: Pack naiveproxy assets
-        run: |
-          mkdir ${{ env.BUNDLE }}
-          cp out/Release/naive config.json ../LICENSE ../USAGE.txt ${{ env.BUNDLE }}
-          tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
-          openssl sha256 out/Release/naive >sha256sum.txt
-          echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BUNDLE }}.tar.xz naive executable sha256 ${{ env.SHA256SUM }}
-          path: src/sha256sum.txt
-      - name: Upload naiveproxy assets
-        if: ${{ github.event_name == 'release' }}
-        run: gh release upload "${GITHUB_REF##*/}" ${{ env.BUNDLE }}.tar.xz --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  openwrt:
-    needs: cache-toolchains-posix
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.android_only) }}
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            openwrt: "target=x86 subtarget=64"
-            target_cpu: x64
-          - arch: aarch64_cortex-a53
-            openwrt: "target=sunxi subtarget=cortexa53"
-            target_cpu: arm64
-            extra: 'arm_cpu="cortex-a53"'
-          - arch: aarch64_cortex-a76
-            openwrt: "target=bcm27xx subtarget=bcm2712"
-            target_cpu: arm64
-            extra: 'arm_cpu="cortex-a76"'
-    env:
-      EXTRA_FLAGS: target_cpu="${{ matrix.target_cpu }}" target_os="openwrt" ${{ matrix.extra }}
-      OPENWRT_FLAGS: arch=${{ matrix.arch }} release=24.10.0 gcc_ver=13.3.0 ${{ matrix.openwrt }}
-      BUNDLE: naiveproxy-${{ github.event.release.tag_name || '0.0.0-1' }}-${{ github.job }}-${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache toolchains (Linux, OpenWrt, Android)
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/third_party/llvm-build/Release+Asserts/
-            src/gn/
-            src/qemu-user*.deb
-          key: toolchains-posix-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache PGO (Linux, OpenWrt)
-        uses: actions/cache@v4
-        with:
-          path: src/chrome/build/pgo_profiles/
-          key: pgo-linux-openwrt-${{ hashFiles('CHROMIUM_VERSION') }}-v${{ env.CACHE_EPOCH }}
-      - name: Cache sysroot and package SDKs
-        uses: actions/cache@v4
-        with:
-          path: |
-            src/out/sysroot-build/openwrt
-            src/out/openwrt-sdk
-          key: openwrt-${{ matrix.arch }}-24.10.0-25.12.1-v${{ env.CACHE_EPOCH }}
-      - id: ccache-timestamp
-        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >>$GITHUB_OUTPUT
-      - name: Cache ccache files
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-openwrt-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
-          restore-keys: ccache-openwrt-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION') }}-
-      - name: Install APT packages
-        run: |
-          sudo apt update
-          sudo apt install ninja-build pkg-config ccache bubblewrap zstd
-          sudo apt remove -y qemu-user-binfmt
-          sudo dpkg -i qemu-user*.deb
-          # libc6-i386 interferes with x86 build
-          sudo apt remove libc6-i386
-      - run: ./get-clang.sh
-      - run: ccache -z
-      - run: ./build.sh
-      - run: ccache -s && ccache --evict-older-than 1d
-      - run: ../tests/basic.sh out/Release/naive
-      - name: Build OpenWrt packages
-        env:
-          PACKAGE_VERSION: ${{ github.event.release.tag_name || '0.0.0-1' }}
-          PACKAGE_OUTPUT_DIR: ${{ github.workspace }}/src/packages
-        run: |
-          PACKAGE_FORMAT=ipk PACKAGE_RELEASE=24.10.0 PACKAGE_GCC_VER=13.3.0 ./package-openwrt.sh
-          PACKAGE_FORMAT=apk PACKAGE_RELEASE=25.12.1 PACKAGE_GCC_VER=14.3.0 ./package-openwrt.sh
-      - name: Pack naiveproxy assets
-        run: |
-          mkdir ${{ env.BUNDLE }}
-          cp out/Release/naive config.json ../LICENSE ../USAGE.txt ${{ env.BUNDLE }}
-          tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
-          openssl sha256 out/Release/naive packages/* >sha256sum.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BUNDLE }} packages
-          path: |
-            src/${{ env.BUNDLE }}.tar.xz
-            src/packages/*.ipk
-            src/packages/*.apk
-            src/sha256sum.txt
-      - name: Upload naiveproxy assets
-        if: ${{ github.event_name == 'release' }}
-        run: gh release upload "${GITHUB_REF##*/}" ${{ env.BUNDLE }}.tar.xz packages/*.ipk packages/*.apk --clobber
+          tag_name: ${{ github.event.release.tag_name || 'latest-build' }}
+          name: ${{ github.event.release.name || 'Latest Automated Build' }}
+          body: |
+            This is an automated build containing the latest compiled binaries.
+            Commit: ${{ github.sha }}
+          prerelease: ${{ github.event_name != 'release' }}
+          files: src/${{ env.BUNDLE }}.tar.xz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
